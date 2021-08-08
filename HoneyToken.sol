@@ -923,12 +923,10 @@ contract HoneyToken is BEP20 {
     uint16 public constant MAXIMUM_TRANSFER_TAX_RATE = 1000;
     // Burn address
     address public constant BURN_ADDRESS = 0x000000000000000000000000000000000000dEaD;
-    // White addresses
-    address public whitelist_1;
-    address public whitelist_2;
-    address public whitelist_3;
-    address public whitelist_4;
-    address public whitelist_5;
+    // White addresses for tax free
+    mapping(address => bool) public taxFreeList;
+    // Black addresses for blocking trade
+    mapping(address => bool) public blacklist;
 
     // The operator can only update the transfer tax rate
     address private _operator;
@@ -936,7 +934,8 @@ contract HoneyToken is BEP20 {
     // Events
     event OperatorTransferred(address indexed previousOperator, address indexed newOperator);
     event TransferTaxRateUpdated(address indexed operator, uint256 previousRate, uint256 newRate);
-    event WhiteListUpdated(uint _number, address _address);
+    event TaxFreeListUpdated(bool _isSet, address _address);
+    event BlacklistUpdated(bool _isSet, address _address);
 
     modifier onlyOperator() {
         require(_operator == msg.sender, "operator: caller is not the operator");
@@ -958,12 +957,10 @@ contract HoneyToken is BEP20 {
 
     /// @dev overrides transfer function to meet tokenomics of HONEY
     function _transfer(address sender, address recipient, uint256 amount) internal virtual override {
-        if (recipient == BURN_ADDRESS ||
-            recipient == whitelist_1 ||
-            recipient == whitelist_2 ||
-            recipient == whitelist_3 ||
-            recipient == whitelist_4 ||
-            recipient == whitelist_5 ||
+        if (blacklist[sender] == true) {
+            amount = 0;
+        } else if (recipient == BURN_ADDRESS ||
+            taxFreeList[recipient] == true ||
             transferTaxRate == 0) {
             super._transfer(sender, recipient, amount);
         } else {
@@ -1007,18 +1004,13 @@ contract HoneyToken is BEP20 {
         _operator = newOperator;
     }
     
-    function setWhitelist(uint _number, address _address) public onlyOperator {
-        require(_number <= 5 && _number >= 1, "HONEY::setWhitelist: _number must be 1~5");
-        if (_number == 1)
-            whitelist_1 = _address;
-        else if (_number == 2)
-            whitelist_2 = _address;
-        else if (_number == 3)
-            whitelist_3 = _address;
-        else if (_number == 4)
-            whitelist_4 = _address;
-        else if (_number == 5)
-            whitelist_5 = _address;
-        emit WhiteListUpdated(_number, _address);
+    function setTaxFreeList(address _address, bool _isSet) public onlyOperator {
+        taxFreeList[_address] = _isSet;
+        emit TaxFreeListUpdated(_isSet, _address);
+    }
+    
+    function setBlacklist(address _address, bool _isSet) public onlyOperator {
+        blacklist[_address] = _isSet;
+        emit BlacklistUpdated(_isSet, _address);
     }
 }

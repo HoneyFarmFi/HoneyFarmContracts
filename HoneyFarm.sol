@@ -1207,6 +1207,7 @@ contract YetiMaster is Ownable, ReentrancyGuard {
     struct UserInfo {
         uint256 amount; // How many amount tokens the user has provided.
         uint256 rewardDebt; // Reward debt. See explanation below.
+        uint256 lastDepositBlock; // Block number of the last deposit.
 
         // We do some fancy math here. Basically, any point in time, the amount of earnings
         // entitled to a user but is pending to be distributed is:
@@ -1227,11 +1228,11 @@ contract YetiMaster is Ownable, ReentrancyGuard {
         uint256 accEarningsPerShare; // Accumulated earnings per share, times 1e12. See below.
         address strat; // Strategy address that will earnings compound want tokens
         uint16 depositFeeBP;      // Deposit fee in basis points
-        uint16 withdrawFeeBP;      // Deposit fee in basis points
+        bool isWithdrawFee;      // if the pool has withdraw fee
     }
 
     // @TODO: Add HoneyToken address to here
-    address public earningToken = 0xFa363022816aBf82f18a9C2809dCd2BB393F6AC5;
+    address public earningToken = 0x51C9242ebE6D982B4f572Be66d6fC2af7e0abe80;
 
      // Dev address.
     address public devaddr;
@@ -1240,7 +1241,6 @@ contract YetiMaster is Ownable, ReentrancyGuard {
 
     address public feeAddr;
 
-    address public wbnb = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
     uint256 public EarningsPerBlock = 0.05 ether;
     uint256 public EarningsDevPerBlock =  0.005 ether;
     uint256 public startBlock;
@@ -1256,6 +1256,11 @@ contract YetiMaster is Ownable, ReentrancyGuard {
     PoolInfo[] public poolInfo; // Info of each pool.
     mapping(uint256 => mapping(address => UserInfo)) public userInfo; // Info of each user that stakes LP tokens.
     uint256 public totalAllocPoint = 0; // Total allocation points. Must be the sum of all allocation points in all pools.
+    
+    uint256[] public withdrawalFeeIntervals;
+    uint16[] public withdrawalFeeBP;
+    uint16 public MAX_WITHDRAWAL_FEE_BP = 300;
+    uint16 public MAX_DEPOSIT_FEE_BP = 400;
 
     event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
     event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
@@ -1296,9 +1301,9 @@ contract YetiMaster is Ownable, ReentrancyGuard {
         bool _withUpdate,
         address _strat,
         uint16 _depositFeeBP,
-        uint16 _withdrawFeeBP
+        bool _isWithdrawFee
     ) public onlyOwner {
-        require(_depositFeeBP <= 400, "add: invalid deposit fee basis points");
+        require(_depositFeeBP <= MAX_DEPOSIT_FEE_BP, "add: invalid deposit fee basis points");
         if (_withUpdate) {
             massUpdatePools();
         }
@@ -1313,7 +1318,7 @@ contract YetiMaster is Ownable, ReentrancyGuard {
                 accEarningsPerShare: 0,
                 strat: _strat,
                 depositFeeBP : _depositFeeBP,
-                withdrawFeeBP: _withdrawFeeBP
+                isWithdrawFee: _isWithdrawFee
             })
         );
     }
@@ -1324,9 +1329,9 @@ contract YetiMaster is Ownable, ReentrancyGuard {
         uint256 _allocPoint,
         bool _withUpdate,
         uint16 _depositFeeBP,
-        uint16 _withdrawFeeBP
+        bool _isWithdrawFee
     ) public onlyOwner poolExists(_pid) {
-        require(_depositFeeBP <= 400, "set: invalid deposit fee basis points");
+        require(_depositFeeBP <= MAX_DEPOSIT_FEE_BP, "set: invalid deposit fee basis points");
         if (_withUpdate) {
             massUpdatePools();
         }
@@ -1335,7 +1340,7 @@ contract YetiMaster is Ownable, ReentrancyGuard {
         );
         poolInfo[_pid].allocPoint = _allocPoint;
         poolInfo[_pid].depositFeeBP = _depositFeeBP;
-        poolInfo[_pid].withdrawFeeBP = _withdrawFeeBP;
+        poolInfo[_pid].isWithdrawFee = _isWithdrawFee;
     }
 
     // Return reward multiplier over the given _from to _to block.
@@ -1361,12 +1366,12 @@ contract YetiMaster is Ownable, ReentrancyGuard {
         if (blockNumber > pool.lastRewardBlock && wantLockedTotal != 0) {
             uint256 multiplier =
                 getMultiplier(pool.lastRewardBlock, blockNumber);
-            uint256 EarningsReward =
+            uint256 earningsReward =
                 multiplier.mul(EarningsPerBlock).mul(pool.allocPoint).div(
                     totalAllocPoint
                 );
             accEarningsPerShare = accEarningsPerShare.add(
-                EarningsReward.mul(1e12).div(wantLockedTotal)
+                earningsReward.mul(1e12).div(wantLockedTotal)
             );
         }
         return user.amount.mul(accEarningsPerShare).div(1e12).sub(user.rewardDebt);
@@ -1396,7 +1401,7 @@ contract YetiMaster is Ownable, ReentrancyGuard {
         if (multiplier <= 0) {
             return;
         }
-        uint256 EarningsReward =  multiplier.mul(EarningsPerBlock).mul(pool.allocPoint).div(totalAllocPoint);
+        uint256 earningsReward =  multiplier.mul(EarningsPerBlock).mul(pool.allocPoint).div(totalAllocPoint);
 
         HoneyToken(earningToken).mint(
             devaddr,
@@ -1407,11 +1412,11 @@ contract YetiMaster is Ownable, ReentrancyGuard {
 
         HoneyToken(earningToken).mint(
             address(this),
-            EarningsReward
+            earningsReward
         );
 
         pool.accEarningsPerShare = pool.accEarningsPerShare.add(
-            EarningsReward.mul(1e12).div(wantLockedTotal)
+            earningsReward.mul(1e12).div(wantLockedTotal)
         );
         pool.lastRewardBlock = blockNumber;
     }
@@ -1450,6 +1455,7 @@ contract YetiMaster is Ownable, ReentrancyGuard {
             uint256 amountDeposit =
                 IStrategy(poolInfo[_pid].strat).deposit(amount);
             user.amount = user.amount.add(amountDeposit);
+            user.lastDepositBlock = block.number;
         }
         user.rewardDebt = user.amount.mul(pool.accEarningsPerShare).div(1e12);
         emit Deposit(msg.sender, _pid, _wantAmt);
@@ -1498,10 +1504,13 @@ contract YetiMaster is Ownable, ReentrancyGuard {
                 _wantAmt = wantBal;
             }
 
-            if (pool.withdrawFeeBP > 0) {
-                uint256 withdrawFee = _wantAmt.mul(pool.withdrawFeeBP).div(10000);
-                pool.want.safeTransfer(feeAddr, withdrawFee);
-                _wantAmt = (_wantAmt).sub(withdrawFee);
+            if (pool.isWithdrawFee) {
+                uint16 withdrawFeeBP = getWithdrawFee(_pid, msg.sender);
+                if (withdrawFeeBP > 0) {
+                    uint256 withdrawFee = _wantAmt.mul(withdrawFeeBP).div(10000);
+                    pool.want.safeTransfer(feeAddr, withdrawFee);
+                    _wantAmt = (_wantAmt).sub(withdrawFee);
+                }
             }
             
             pool.want.safeTransfer(address(msg.sender), _wantAmt);
@@ -1518,10 +1527,13 @@ contract YetiMaster is Ownable, ReentrancyGuard {
         uint256 amount = user.amount;
         amount = IStrategy(pool.strat).withdraw(amount);
         
-        if (pool.withdrawFeeBP > 0) {
-            uint256 withdrawFee = amount.mul(pool.withdrawFeeBP).div(10000);
-            pool.want.safeTransfer(feeAddr, withdrawFee);
-            amount = (amount).sub(withdrawFee);
+        if (pool.isWithdrawFee) {
+            uint16 withdrawFeeBP = getWithdrawFee(_pid, msg.sender);
+            if (withdrawFeeBP > 0) {
+                uint256 withdrawFee = amount.mul(withdrawFeeBP).div(10000);
+                pool.want.safeTransfer(feeAddr, withdrawFee);
+                amount = (amount).sub(withdrawFee);
+            }
         }
 
         user.amount = 0;
@@ -1588,4 +1600,28 @@ contract YetiMaster is Ownable, ReentrancyGuard {
         Ownable(earningToken).transferOwnership(newOwner);
     }
     
+    function getWithdrawFee(uint256 _pid, address _user) public view returns (uint16) {
+        UserInfo storage user = userInfo[_pid][_user];
+        uint256 blockElapsed = block.number - user.lastDepositBlock;
+        uint i = 0;
+        for (; i < withdrawalFeeIntervals.length; i++) {
+            if (blockElapsed < withdrawalFeeIntervals[i])
+                break;
+        }
+        return withdrawalFeeBP[i];
+    }
+    
+    function setWithdrawFee(uint256[] memory _withdrawalFeeIntervals, uint16[] memory _withdrawalFeeBP) public {
+        require (_withdrawalFeeIntervals.length + 1 == _withdrawalFeeBP.length, 'setWithdrawFee: _withdrawalFeeIntervals length is one more than _withdrawalFeeBP length');
+        require (_withdrawalFeeIntervals.length >= 0, 'setWithdrawFee: _withdrawalFeeIntervals length is same as or more than 0');
+        require (_withdrawalFeeBP.length > 0, 'setWithdrawFee: _withdrawalFeeBP length is one more than 0');
+        for (uint i = 0; i < _withdrawalFeeIntervals.length - 1; i++) {
+            require (_withdrawalFeeIntervals[i] < _withdrawalFeeIntervals[i + 1], 'setWithdrawFee: The interval must be ascending');
+        }
+        for (uint i = 0; i < _withdrawalFeeBP.length; i++) {
+            require (_withdrawalFeeBP[i] <= MAX_WITHDRAWAL_FEE_BP, 'setWithdrawFee: invalid withdrawal fee basis points');
+        }
+        withdrawalFeeIntervals = _withdrawalFeeIntervals;
+        withdrawalFeeBP = _withdrawalFeeBP;
+    }
 }
